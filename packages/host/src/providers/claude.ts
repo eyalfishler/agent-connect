@@ -21,6 +21,7 @@ import {
   checkCommandVersion,
   commandExists,
   createLineParser,
+  appendPromptArg,
   debugLog,
   logProviderSpawn,
   resolveWindowsCommand,
@@ -1348,7 +1349,7 @@ export function runClaudePrompt({
       args.push('--model', modelValue);
     }
     if (resumeSessionId) args.push('--resume', resumeSessionId);
-    args.push(prompt);
+    appendPromptArg(args, prompt);
 
     logProviderSpawn({
       provider: 'claude',

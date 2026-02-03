@@ -17,6 +17,7 @@ import {
   commandExists,
   createLineParser,
   applySystemPrompt,
+  appendPromptArg,
   debugLog,
   logProviderSpawn,
   resolveWindowsCommand,
@@ -868,7 +869,7 @@ export function runCursorPrompt({
     }
 
     const composedPrompt = applySystemPrompt(system, prompt);
-    args.push(composedPrompt);
+    appendPromptArg(args, composedPrompt);
 
     logProviderSpawn({
       provider: 'cursor',

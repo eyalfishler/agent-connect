@@ -60,6 +60,10 @@ export function applySystemPrompt(system: string | undefined, prompt: string): s
   return `<<SYSTEM>>\n${trimmed}\n<</SYSTEM>>\n\n<<USER>>\n${prompt}`;
 }
 
+export function appendPromptArg(args: string[], prompt: string): void {
+  args.push('--', prompt);
+}
+
 export interface SplitCommandResult {
   command: string;
   args: string[];

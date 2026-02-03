@@ -22,6 +22,7 @@ import {
   commandExists,
   createLineParser,
   applySystemPrompt,
+  appendPromptArg,
   debugLog,
   logProviderSpawn,
   resolveWindowsCommand,
@@ -323,7 +324,7 @@ function buildCodexExecArgs(options: {
   if (resumeSessionId) {
     args.push('resume', resumeSessionId);
   }
-  args.push(prompt);
+  appendPromptArg(args, prompt);
   return args;
 }
 

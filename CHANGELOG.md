@@ -10,6 +10,10 @@ All notable changes to this project will be documented in this file.
 - Add summary controls (auto once per session, force per message, custom prompt).
 - Clarify summary prompt safety (no commands or file edits).
 
+## 0.2.7
+
+- Ensure CLI prompts are passed as literal args to avoid option parsing when prompts start with "-".
+
 ## 0.2.5
 
 - Generate session summaries via prompt-based flow for all providers.
