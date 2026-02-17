@@ -20,7 +20,8 @@
         "updateSource": { "type": "string" },
         "updateCommand": { "type": "string" },
         "updateMessage": { "type": "string" },
-        "updateInProgress": { "type": "boolean" }
+        "updateInProgress": { "type": "boolean" },
+        "supportsMcpServers": { "type": "boolean" }
       },
       "additionalProperties": false
     },
@@ -49,6 +50,26 @@
         "defaultReasoningEffort": { "type": "string" }
       },
       "additionalProperties": false
+    },
+    "McpServerConfig": {
+      "type": "object",
+      "required": ["command"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "cwd": { "type": "string", "minLength": 1 },
+        "enabled": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "McpServers": {
+      "type": "object",
+      "propertyNames": { "type": "string", "minLength": 1 },
+      "additionalProperties": { "$ref": "#/$defs/McpServerConfig" }
     },
     "HelloParams": { "type": "object", "additionalProperties": false },
     "HelloResult": {
@@ -212,7 +233,8 @@
         "temperature": { "type": "number", "minimum": 0, "maximum": 2 },
         "maxTokens": { "type": "integer", "minimum": 1 },
         "topP": { "type": "number", "minimum": 0, "maximum": 1 },
-        "providerDetailLevel": { "type": "string", "enum": ["minimal", "raw"] }
+        "providerDetailLevel": { "type": "string", "enum": ["minimal", "raw"] },
+        "mcpServers": { "anyOf": [{ "$ref": "#/$defs/McpServers" }, { "type": "null" }] }
       },
       "anyOf": [{ "required": ["model"] }, { "required": ["provider"] }],
       "additionalProperties": false
@@ -234,7 +256,8 @@
         "providerSessionId": { "type": "string" },
         "cwd": { "type": "string" },
         "repoRoot": { "type": "string" },
-        "providerDetailLevel": { "type": "string", "enum": ["minimal", "raw"] }
+        "providerDetailLevel": { "type": "string", "enum": ["minimal", "raw"] },
+        "mcpServers": { "anyOf": [{ "$ref": "#/$defs/McpServers" }, { "type": "null" }] }
       },
       "additionalProperties": false
     },
@@ -261,7 +284,8 @@
         "metadata": { "type": "object" },
         "cwd": { "type": "string" },
         "repoRoot": { "type": "string" },
-        "providerDetailLevel": { "type": "string", "enum": ["minimal", "raw"] }
+        "providerDetailLevel": { "type": "string", "enum": ["minimal", "raw"] },
+        "mcpServers": { "anyOf": [{ "$ref": "#/$defs/McpServers" }, { "type": "null" }] }
       },
       "additionalProperties": false
     },

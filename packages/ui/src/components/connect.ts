@@ -147,6 +147,9 @@ export class AgentConnectConnect extends HTMLElement {
       connectPanel: root.querySelector('.ac-panel[data-view="connect"]'),
       localPanel: root.querySelector('.ac-panel[data-view="local"]'),
       popoverPanel: root.querySelector('.ac-panel[data-view="connected"]'),
+      connectedAuthWrap: root.querySelector('.ac-popover-auth'),
+      connectedAuthText: root.querySelector('.ac-popover-auth-text'),
+      connectedAuthActionButton: root.querySelector('.ac-popover-auth-action'),
       providerList: root.querySelector('.ac-provider-list'),
       connectedModelSelect: root.querySelector('.ac-connected-model'),
       connectedEffortSelect: root.querySelector('.ac-connected-effort'),
@@ -177,6 +180,7 @@ export class AgentConnectConnect extends HTMLElement {
       disconnectButtons,
       backButton,
       saveLocalButton,
+      connectedAuthActionButton,
       connectedModelSelect,
       connectedEffortSelect,
     } = this.elements;
@@ -186,6 +190,9 @@ export class AgentConnectConnect extends HTMLElement {
     disconnectButtons.forEach((item) => item.addEventListener('click', () => this.disconnect()));
     backButton?.addEventListener('click', () => this.setView('connect'));
     saveLocalButton?.addEventListener('click', () => this.saveLocalConfig());
+    connectedAuthActionButton?.addEventListener('click', () => {
+      this.handleConnectedAuthAction().catch(() => {});
+    });
     overlay?.addEventListener('click', (event) => {
       if (event.target === overlay) this.close();
     });
@@ -272,6 +279,14 @@ export class AgentConnectConnect extends HTMLElement {
       this.updateLoginPolling();
       this.renderConnectedModels();
       this.renderReasoningEfforts();
+      this.renderConnectedAuthPrompt();
+      if (this.state.connected?.provider) {
+        const providerId = this.state.connected.provider;
+        const providerName = this.state.providers.find((entry) => entry.id === providerId)?.name;
+        this.checkProviderStatus(providerId, providerName, { silent: true, force: true }).catch(
+          () => {}
+        );
+      }
       requestAnimationFrame(() => this.positionPopover());
     }
   }
@@ -445,6 +460,7 @@ export class AgentConnectConnect extends HTMLElement {
       this.renderProviders();
       this.renderConnectedModels();
       this.renderReasoningEfforts();
+      this.renderConnectedAuthPrompt();
       this.updatePopoverTitle();
       this.updateButtonLabel();
       this.scheduleUpdateRefresh();
@@ -453,7 +469,9 @@ export class AgentConnectConnect extends HTMLElement {
       }
       providerIds.forEach((providerId) => {
         const name = this.state.providers.find((entry) => entry.id === providerId)?.name;
-        this.checkProviderStatus(providerId, name, { silent: true }).catch(() => {});
+        const force =
+          this.state.view === 'connected' && this.state.connected?.provider === providerId;
+        this.checkProviderStatus(providerId, name, { silent: true, force }).catch(() => {});
       });
     } catch {
       if (!silent) {
@@ -520,7 +538,7 @@ export class AgentConnectConnect extends HTMLElement {
   private async checkProviderStatus(
     providerId: ProviderId,
     providerName?: string,
-    options: { silent?: boolean } = {}
+    options: { silent?: boolean; force?: boolean } = {}
   ): Promise<void> {
     if (this.statusCheckInFlight.has(providerId)) return;
     this.statusCheckInFlight.add(providerId);
@@ -530,7 +548,10 @@ export class AgentConnectConnect extends HTMLElement {
     }
     try {
       const client = await getClient();
-      const status = await client.providers.status(providerId);
+      const status = await client.providers.status(providerId, {
+        fast: false,
+        ...(options.force ? { force: true } : {}),
+      });
       this.updateProviderEntry(providerId, {
         installed: status.installed,
         loggedIn: status.loggedIn,
@@ -551,6 +572,7 @@ export class AgentConnectConnect extends HTMLElement {
         this.renderReasoningEfforts();
       }
       this.renderProviders();
+      this.renderConnectedAuthPrompt();
       this.updatePopoverTitle();
       this.updateButtonLabel();
       this.updateLoginPolling();
@@ -558,6 +580,7 @@ export class AgentConnectConnect extends HTMLElement {
     } catch {
       this.updateProviderEntry(providerId, { pending: false });
       this.renderProviders();
+      this.renderConnectedAuthPrompt();
       this.updatePopoverTitle();
       this.updateButtonLabel();
     } finally {
@@ -579,7 +602,7 @@ export class AgentConnectConnect extends HTMLElement {
     this.updateButtonLabel();
 
     while (Date.now() - startedAt < this.loginPollTimeoutMs) {
-      const status = await client.providers.status(providerId);
+      const status = await client.providers.status(providerId, { fast: false, force: true });
       this.updateProviderEntry(providerId, {
         installed: status.installed,
         loggedIn: status.loggedIn,
@@ -597,6 +620,7 @@ export class AgentConnectConnect extends HTMLElement {
         await this.refreshModels();
         this.renderConnectedModels();
         this.renderReasoningEfforts();
+        this.renderConnectedAuthPrompt();
         this.updatePopoverTitle();
         this.updateButtonLabel();
         this.updateLoginPolling();
@@ -607,6 +631,7 @@ export class AgentConnectConnect extends HTMLElement {
     }
 
     this.loginPending.delete(providerId);
+    this.renderConnectedAuthPrompt();
     this.updateLoginPolling();
     this.setStatus(`Still waiting for ${providerName} login...`);
     return false;
@@ -847,7 +872,7 @@ export class AgentConnectConnect extends HTMLElement {
     }
     if (this.loginPending.has(provider.id)) {
       const button = this.buildActionButton('Waiting for login...', false, () =>
-        this.checkProviderStatus(provider.id, provider.name)
+        this.checkProviderStatus(provider.id, provider.name, { force: true })
       );
       button.title = `Click to check ${provider.name || provider.id} login status`;
       actions.push(button);
@@ -1254,6 +1279,64 @@ export class AgentConnectConnect extends HTMLElement {
     connectedEffortSelect.value = selected;
   }
 
+  private getConnectedProviderEntry(): ProviderInfoWithPending | null {
+    const providerId = this.state.connected?.provider;
+    if (!providerId) return null;
+    return this.state.providers.find((entry) => entry.id === providerId) || null;
+  }
+
+  private getLoginActionLabel(provider: ProviderInfoWithPending): string {
+    if (provider.id === 'claude' && this.state.loginExperience === 'terminal') {
+      return 'Run /login';
+    }
+    return 'Login';
+  }
+
+  private renderConnectedAuthPrompt(): void {
+    const { connectedAuthWrap, connectedAuthText, connectedAuthActionButton } = this.elements ?? {};
+    if (!connectedAuthWrap || !connectedAuthText || !connectedAuthActionButton) return;
+    const provider = this.getConnectedProviderEntry();
+    if (!provider || provider.id === 'local' || provider.pending || !provider.installed) {
+      connectedAuthWrap.hidden = true;
+      return;
+    }
+    const waitingForLogin = this.loginPending.has(provider.id);
+    const needsLogin = waitingForLogin || !provider.loggedIn;
+    connectedAuthWrap.hidden = !needsLogin;
+    if (!needsLogin) return;
+    const providerName = provider.name || provider.id;
+    connectedAuthText.textContent = waitingForLogin
+      ? `Waiting for ${providerName} login...`
+      : `Authentication required for ${providerName}.`;
+    connectedAuthActionButton.textContent = waitingForLogin
+      ? 'Check status'
+      : this.getLoginActionLabel(provider);
+    connectedAuthActionButton.disabled = this.busy;
+  }
+
+  private async handleConnectedAuthAction(): Promise<void> {
+    const provider = this.getConnectedProviderEntry();
+    if (!provider || provider.id === 'local') return;
+    if (provider.pending) {
+      await this.checkProviderStatus(provider.id, provider.name, { silent: true, force: true });
+      return;
+    }
+    if (this.loginPending.has(provider.id)) {
+      await this.checkProviderStatus(provider.id, provider.name, { silent: true, force: true });
+      return;
+    }
+    const providerName = provider.name || provider.id;
+    this.setBusy(true, `Authenticating ${providerName}...`);
+    try {
+      const ready = await this.ensureProviderReady(provider, providerName);
+      if (!ready) return;
+      await this.checkProviderStatus(provider.id, provider.name, { silent: true, force: true });
+    } finally {
+      this.setBusy(false);
+      this.renderConnectedAuthPrompt();
+    }
+  }
+
   private updatePopoverTitle(): void {
     const { popoverTitle } = this.elements ?? {};
     if (!popoverTitle) return;
@@ -1355,6 +1438,7 @@ export class AgentConnectConnect extends HTMLElement {
     saveSelection(selection, this.storageKey);
     this.updateButtonLabel();
     this.updatePopoverTitle();
+    this.renderConnectedAuthPrompt();
     if (!previous) {
       this.dispatchSelectionEvent('agentconnect:connected', selection, null, false);
     } else if (previous.scopeId !== scopeId) {
@@ -1374,6 +1458,7 @@ export class AgentConnectConnect extends HTMLElement {
     clearSelection(this.storageKey);
     this.updateButtonLabel();
     this.renderProviders();
+    this.renderConnectedAuthPrompt();
     if (previous) {
       this.dispatchSelectionEvent('agentconnect:disconnected', null, previous, false);
     }
@@ -1518,5 +1603,6 @@ export class AgentConnectConnect extends HTMLElement {
       progressWrap.hidden = true;
       progressLabel.textContent = '';
     }
+    this.renderConnectedAuthPrompt();
   }
 }

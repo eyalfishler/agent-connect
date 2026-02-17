@@ -1,6 +1,8 @@
 import { spawn } from 'child_process';
+import { mkdir, readFile, rm, writeFile } from 'fs/promises';
 import path from 'path';
 import type {
+  McpServerConfig,
   ProviderStatus,
   RunPromptOptions,
   RunPromptResult,
@@ -533,6 +535,67 @@ function safeJsonParse(line: string): unknown {
   }
 }
 
+async function createCursorRunMcpConfig(
+  runDir: string,
+  mcpServers?: Record<string, McpServerConfig>
+): Promise<{ enabled: boolean; cleanup: () => void }> {
+  if (!mcpServers || !Object.keys(mcpServers).length) {
+    return { enabled: false, cleanup: () => {} };
+  }
+
+  const cursorDir = path.join(runDir, '.cursor');
+  const configPath = path.join(cursorDir, 'mcp.json');
+  let hadExistingConfig = false;
+  let previousConfigContent = '';
+
+  try {
+    previousConfigContent = await readFile(configPath, 'utf8');
+    hadExistingConfig = true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code !== 'ENOENT') throw err;
+  }
+
+  const configServers: Record<string, Record<string, unknown>> = {};
+  for (const [id, config] of Object.entries(mcpServers)) {
+    const args = Array.isArray(config.args) ? config.args.map(String) : [];
+    configServers[id] = {
+      command: String(config.command),
+      ...(args.length ? { args } : {}),
+      ...(config.env && Object.keys(config.env).length ? { env: config.env } : {}),
+      ...(typeof config.cwd === 'string' && config.cwd.trim() ? { cwd: config.cwd.trim() } : {}),
+    };
+  }
+  const injectedContent = `${JSON.stringify({ mcpServers: configServers }, null, 2)}\n`;
+  await mkdir(cursorDir, { recursive: true });
+  await writeFile(configPath, injectedContent, 'utf8');
+
+  const cleanup = (): void => {
+    void (async () => {
+      let currentContent = '';
+      try {
+        currentContent = await readFile(configPath, 'utf8');
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException | undefined)?.code;
+        if (code === 'ENOENT') return;
+        return;
+      }
+
+      if (currentContent !== injectedContent) return;
+
+      if (hadExistingConfig) {
+        await writeFile(configPath, previousConfigContent, 'utf8').catch(() => {});
+        return;
+      }
+
+      await rm(configPath).catch(() => {});
+      await rm(cursorDir).catch(() => {});
+    })();
+  };
+
+  return { enabled: true, cleanup };
+}
+
 interface CursorEvent {
   type?: string;
   subtype?: string;
@@ -662,8 +725,7 @@ function extractContextUsage(
     }
     return undefined;
   };
-  const toBoolean = (v: unknown): boolean | undefined =>
-    typeof v === 'boolean' ? v : undefined;
+  const toBoolean = (v: unknown): boolean | undefined => (typeof v === 'boolean' ? v : undefined);
   const contextWindow = toNumber(
     context?.context_window ?? context?.contextWindow ?? ev.context_window ?? ev.contextWindow
   );
@@ -683,13 +745,13 @@ function extractContextUsage(
       ev.contextRemainingTokens
   );
   const contextTruncated = toBoolean(
-    context?.context_truncated ?? context?.contextTruncated ?? ev.context_truncated ?? ev.contextTruncated
+    context?.context_truncated ??
+      context?.contextTruncated ??
+      ev.context_truncated ??
+      ev.contextTruncated
   );
   if (contextTokens === undefined) {
-    if (
-      usage?.input_tokens !== undefined &&
-      usage?.cached_input_tokens !== undefined
-    ) {
+    if (usage?.input_tokens !== undefined && usage?.cached_input_tokens !== undefined) {
       contextTokens = usage.input_tokens + usage.cached_input_tokens;
     } else if (usage?.input_tokens !== undefined) {
       contextTokens = usage.input_tokens;
@@ -837,23 +899,53 @@ function extractErrorMessage(ev: CursorEvent): string | null {
   return null;
 }
 
-export function runCursorPrompt({
+export async function runCursorPrompt({
   prompt,
   system,
   resumeSessionId,
   model,
   repoRoot,
   cwd,
+  mcpServers,
   providerDetailLevel,
   onEvent,
   signal,
 }: RunPromptOptions): Promise<RunPromptResult> {
+  const command = getCursorCommand();
+  const resolvedRepoRoot = repoRoot ? path.resolve(repoRoot) : null;
+  const resolvedCwd = cwd ? path.resolve(cwd) : null;
+  const runDir = resolvedCwd || resolvedRepoRoot || process.cwd();
+
+  let cleanupMcpConfig = (): void => {};
+  let hasCursorMcpConfig = false;
+  if (mcpServers && Object.keys(mcpServers).length) {
+    try {
+      const setup = await createCursorRunMcpConfig(runDir, mcpServers);
+      cleanupMcpConfig = setup.cleanup;
+      hasCursorMcpConfig = setup.enabled;
+    } catch (err) {
+      onEvent({
+        type: 'detail',
+        provider: 'cursor',
+        providerDetail: {
+          eventType: 'mcp.server_failed',
+          data: {
+            reason: 'Failed to create Cursor MCP workspace config',
+            error: (err as Error)?.message || 'Unknown error',
+          },
+        },
+      });
+    }
+  }
+
   return new Promise((resolve) => {
-    const command = getCursorCommand();
-    const resolvedRepoRoot = repoRoot ? path.resolve(repoRoot) : null;
-    const resolvedCwd = cwd ? path.resolve(cwd) : null;
-    const runDir = resolvedCwd || resolvedRepoRoot || process.cwd();
     const args: string[] = ['--print', '--output-format', 'stream-json'];
+    let didCleanupMcpConfig = false;
+    const cleanupMcp = (): void => {
+      if (didCleanupMcpConfig) return;
+      didCleanupMcpConfig = true;
+      cleanupMcpConfig();
+    };
 
     if (resumeSessionId) {
       args.push('--resume', resumeSessionId);
@@ -867,9 +959,30 @@ export function runCursorPrompt({
     if (endpoint) {
       args.push('--endpoint', endpoint);
     }
+    if (hasCursorMcpConfig) {
+      args.push('--approve-mcps');
+    }
 
     const composedPrompt = applySystemPrompt(system, prompt);
     appendPromptArg(args, composedPrompt);
+    const commandArgs = [...args];
+    if (commandArgs.length > 0) {
+      commandArgs[commandArgs.length - 1] = '[prompt]';
+    }
+
+    onEvent({
+      type: 'detail',
+      provider: 'cursor',
+      providerDetail: {
+        eventType: 'command',
+        data: {
+          command,
+          args: commandArgs,
+          cwd: runDir,
+          ...(resumeSessionId ? { resumeSessionId } : {}),
+        },
+      },
+    });
 
     logProviderSpawn({
       provider: 'cursor',
@@ -1159,12 +1272,14 @@ export function runCursorPrompt({
           }
         }
       }
+      cleanupMcp();
       resolve({ sessionId: finalSessionId });
     });
 
     child.on('error', (err: Error) => {
       debugLog('Cursor', 'spawn-error', { message: err?.message });
       emitError(err?.message ?? 'Cursor failed to start');
+      cleanupMcp();
       resolve({ sessionId: finalSessionId });
     });
   });

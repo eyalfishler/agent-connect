@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.8
+
+- Add session-level MCP server loadouts to ACP and SDK (`create`, `resume`, `send`) with explicit provider capability reporting.
+- Implement dynamic MCP wiring for Claude, Codex, and Cursor providers, including per-run Codex MCP env wrapper scripts to avoid leaking env values in CLI args.
+- Emit provider command detail events consistently and add host spawn logging controls for easier runtime verification.
+- Improve auth-expiry handling so provider auth failures propagate to host/provider status and unlock login recovery flows in the connect modal.
+- Add and document a dedicated test app for pure AgentConnect behavior with MCP loadout editing and provider-specific guidance.
+- Expand smoke coverage with bridge MCP/auth checks, UI auth rig validation, and a new Codex MCP wiring rig.
+
 ## 0.2.6
 
 - Normalize token and context usage across providers, including cached and context window fields.

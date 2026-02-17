@@ -358,6 +358,14 @@ Model selection:
 - `acp.sessions.cancel` stops the in-flight run (session remains open) and emits a terminal event with
   `cancelled: true` (`final` preferred, or `error`).
 - `acp.providers.status` accepts `options.fast` and `options.force` to control cache usage.
+- `mcpServers` can be provided on `acp.sessions.create`, `acp.sessions.resume`, and `acp.sessions.send`.
+  - Omitted on `send`: use session-level MCP config.
+  - `null` on `send`: clear MCP for that one call.
+  - Object on `send`: replace MCP for that one call only.
+  - MCP loadouts are currently supported by `claude`, `codex`, and `cursor`.
+  - `local` currently returns `AC_ERR_UNSUPPORTED` if MCP servers are active for a run.
+  - AgentConnect treats MCP commands as trusted integrator input.
+  - MCP commands run with host process privileges; use at your own risk.
 
 ## Usage and context usage events
 
@@ -426,6 +434,7 @@ export type ProviderInfo = {
   updateCommand?: string;
   updateMessage?: string;
   updateInProgress?: boolean;
+  supportsMcpServers?: boolean;
 };
 
 export type ReasoningEffortOption = {
@@ -577,6 +586,14 @@ export type SummaryOptions = {
   prompt?: string;
 };
 
+export type McpServerConfig = {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  enabled?: boolean;
+};
+
 export type SessionCreateOptions = {
   model?: string;
   provider?: ProviderId;
@@ -590,6 +607,7 @@ export type SessionCreateOptions = {
   topP?: number;
   providerDetailLevel?: 'minimal' | 'raw';
   summary?: SummaryOptions;
+  mcpServers?: Record<string, McpServerConfig> | null;
 };
 
 export type SessionSendOptions = {
@@ -598,6 +616,7 @@ export type SessionSendOptions = {
   repoRoot?: string;
   providerDetailLevel?: 'minimal' | 'raw';
   summary?: SummaryOptions;
+  mcpServers?: Record<string, McpServerConfig> | null;
 };
 
 export type SessionResumeOptions = {
@@ -609,6 +628,7 @@ export type SessionResumeOptions = {
   repoRoot?: string;
   providerDetailLevel?: 'minimal' | 'raw';
   summary?: SummaryOptions;
+  mcpServers?: Record<string, McpServerConfig> | null;
 };
 
 export interface AgentConnectSession {

@@ -123,6 +123,7 @@ export type ProviderInfo = {
   updateCommand?: string;
   updateMessage?: string;
   updateInProgress?: boolean;
+  supportsMcpServers?: boolean;
 };
 
 export type ReasoningEffortOption = {
@@ -268,6 +269,14 @@ export type SummaryOptions = {
   prompt?: string;
 };
 
+export type McpServerConfig = {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  enabled?: boolean;
+};
+
 export type SessionCreateOptions = {
   model?: string;
   provider?: ProviderId;
@@ -281,6 +290,7 @@ export type SessionCreateOptions = {
   topP?: number;
   providerDetailLevel?: 'minimal' | 'raw';
   summary?: SummaryOptions;
+  mcpServers?: Record<string, McpServerConfig> | null;
 };
 
 export type SessionSendOptions = {
@@ -289,6 +299,7 @@ export type SessionSendOptions = {
   repoRoot?: string;
   providerDetailLevel?: 'minimal' | 'raw';
   summary?: SummaryOptions;
+  mcpServers?: Record<string, McpServerConfig> | null;
 };
 
 export type SessionResumeOptions = {
@@ -300,13 +311,25 @@ export type SessionResumeOptions = {
   repoRoot?: string;
   providerDetailLevel?: 'minimal' | 'raw';
   summary?: SummaryOptions;
+  mcpServers?: Record<string, McpServerConfig> | null;
 };
 ```
 
 Summary behavior:
+
 - `auto` generates a summary for the first message in a session, then stops.
 - `force` generates a summary for the current message even if auto already ran.
 - `off` disables summaries.
+
+MCP behavior:
+
+- `session.send(..., { mcpServers })` is one-shot for that call only.
+- `mcpServers: null` clears MCP servers for that call.
+- Omitted `mcpServers` on send uses the session-level MCP configuration.
+- MCP loadouts are currently supported by `claude`, `codex`, and `cursor`.
+- `local` currently returns `AC_ERR_UNSUPPORTED` if MCP servers are active for a run.
+- AgentConnect treats MCP commands as trusted integrator input.
+- MCP commands run with host process privileges; use at your own risk.
 
 ## Client API
 

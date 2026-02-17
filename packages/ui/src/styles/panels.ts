@@ -114,6 +114,34 @@ export const panelStyles = `
     font-size: 12px;
     color: var(--ac-muted, #556070);
   }
+  .ac-popover-auth {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 9px 10px;
+    border: 1px solid rgba(200, 120, 95, 0.35);
+    border-radius: 12px;
+    background: linear-gradient(
+      165deg,
+      rgba(255, 245, 240, 0.92) 0%,
+      rgba(255, 238, 230, 0.88) 100%
+    );
+  }
+  .ac-popover-auth[hidden] {
+    display: none;
+  }
+  .ac-popover-auth-text {
+    font-size: 12px;
+    color: #3f2b24;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .ac-popover-auth-action {
+    padding: 8px 12px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
   .ac-section-title {
     font-size: 12px;
     text-transform: uppercase;

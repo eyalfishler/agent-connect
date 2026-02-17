@@ -40,6 +40,7 @@ export const providers: Record<ProviderId, Provider> = {
   claude: {
     id: 'claude',
     name: 'Claude',
+    supportsMcpServers: true,
     ensureInstalled: ensureClaudeInstalled,
     fastStatus: getClaudeFastStatus,
     status: getClaudeStatus,
@@ -51,6 +52,7 @@ export const providers: Record<ProviderId, Provider> = {
   codex: {
     id: 'codex',
     name: 'Codex',
+    supportsMcpServers: true,
     ensureInstalled: ensureCodexInstalled,
     fastStatus: getCodexFastStatus,
     status: getCodexStatus,
@@ -62,6 +64,7 @@ export const providers: Record<ProviderId, Provider> = {
   cursor: {
     id: 'cursor',
     name: 'Cursor',
+    supportsMcpServers: true,
     ensureInstalled: ensureCursorInstalled,
     fastStatus: getCursorFastStatus,
     status: getCursorStatus,
@@ -73,6 +76,7 @@ export const providers: Record<ProviderId, Provider> = {
   local: {
     id: 'local',
     name: 'Local',
+    supportsMcpServers: false,
     ensureInstalled: ensureLocalInstalled,
     status: getLocalStatus,
     update: updateLocal,

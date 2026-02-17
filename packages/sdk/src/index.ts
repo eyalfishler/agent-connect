@@ -21,6 +21,7 @@ export type ProviderInfo = {
   updateCommand?: string;
   updateMessage?: string;
   updateInProgress?: boolean;
+  supportsMcpServers?: boolean;
 };
 
 export type ReasoningEffortOption = {
@@ -60,6 +61,14 @@ export type ProviderDetail = {
   eventType: string;
   data?: Record<string, unknown>;
   raw?: unknown;
+};
+
+export type McpServerConfig = {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  enabled?: boolean;
 };
 
 export type SessionEvent =
@@ -188,6 +197,7 @@ export type SessionCreateOptions = {
   topP?: number;
   providerDetailLevel?: ProviderDetailLevel;
   summary?: SummaryOptions;
+  mcpServers?: Record<string, McpServerConfig> | null;
 };
 
 export type SessionSendOptions = {
@@ -196,6 +206,7 @@ export type SessionSendOptions = {
   repoRoot?: string;
   providerDetailLevel?: ProviderDetailLevel;
   summary?: SummaryOptions;
+  mcpServers?: Record<string, McpServerConfig> | null;
 };
 
 export type SessionResumeOptions = {
@@ -207,6 +218,7 @@ export type SessionResumeOptions = {
   repoRoot?: string;
   providerDetailLevel?: ProviderDetailLevel;
   summary?: SummaryOptions;
+  mcpServers?: Record<string, McpServerConfig> | null;
 };
 
 export interface AgentConnectSession {
@@ -529,14 +541,19 @@ class AgentConnectSessionImpl implements AgentConnectSession {
     options?: SessionSendOptions | Record<string, unknown>
   ): Promise<void> {
     const normalized = this.normalizeSendOptions(options);
-    await this.client.request('acp.sessions.send', {
+    const payload: Record<string, unknown> = {
       sessionId: this.id,
       message: { role: 'user', content: message },
-      metadata: normalized.metadata,
-      cwd: normalized.cwd,
-      repoRoot: normalized.repoRoot,
-      providerDetailLevel: normalized.providerDetailLevel,
-    });
+    };
+    if (normalized.metadata !== undefined) payload.metadata = normalized.metadata;
+    if (normalized.cwd !== undefined) payload.cwd = normalized.cwd;
+    if (normalized.repoRoot !== undefined) payload.repoRoot = normalized.repoRoot;
+    if (normalized.providerDetailLevel !== undefined) {
+      payload.providerDetailLevel = normalized.providerDetailLevel;
+    }
+    if (normalized.summary !== undefined) payload.summary = normalized.summary;
+    if (normalized.mcpServers !== undefined) payload.mcpServers = normalized.mcpServers;
+    await this.client.request('acp.sessions.send', payload);
   }
 
   async cancel(): Promise<void> {
@@ -580,7 +597,8 @@ class AgentConnectSessionImpl implements AgentConnectSession {
       'cwd' in candidate ||
       'repoRoot' in candidate ||
       'providerDetailLevel' in candidate ||
-      'summary' in candidate
+      'summary' in candidate ||
+      'mcpServers' in candidate
     ) {
       return candidate;
     }

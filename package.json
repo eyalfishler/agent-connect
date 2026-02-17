@@ -1,6 +1,6 @@
 {
   "name": "agentconnect",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -24,7 +24,8 @@
     "clean:dist": "find packages -name dist -type d -prune -exec rm -r {} +",
     "publish:all": "bun run clean:dist && bun run build && bun publish --cwd packages/host --access public && bun publish --cwd packages/sdk --access public && bun publish --cwd packages/ui --access public && bun publish --cwd packages/cli --access public",
     "postinstall": "bun run build",
-    "test:smoke": "bun run --cwd packages/host build && bun tests/smoke.mjs && bun tests/bridge-smoke.mjs",
+    "test:smoke": "bun run --cwd packages/host build && bun tests/smoke.mjs && bun tests/bridge-smoke.mjs && bun tests/codex-mcp-rig.mjs && bun tests/ui-auth-rig.mjs",
+    "test:ui-auth-rig": "bun tests/ui-auth-rig.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
@@ -38,6 +39,7 @@
     "eslint-config-prettier": "^9",
     "eslint-plugin-prettier": "^5",
     "globals": "^17.0.0",
+    "jsdom": "^28.1.0",
     "prettier": "^3",
     "ws": "^8.19.0"
   }

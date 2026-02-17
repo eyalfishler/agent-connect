@@ -1,9 +1,10 @@
 import { spawn } from 'child_process';
-import { readFile } from 'fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import https from 'https';
 import os from 'os';
 import path from 'path';
 import type {
+  McpServerConfig,
   ProviderStatus,
   ModelInfo,
   RunPromptOptions,
@@ -275,6 +276,100 @@ async function hasCodexAuth(): Promise<boolean> {
 }
 
 type CodexExecMode = 'modern' | 'legacy';
+const CODEX_MCP_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+function shellEscape(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function cmdEscape(value: string): string {
+  if (!value) return '""';
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+async function writeCodexMcpWrapper(
+  wrapperPath: string,
+  command: string,
+  env: Record<string, string>
+): Promise<void> {
+  if (process.platform === 'win32') {
+    const lines = ['@echo off'];
+    for (const [key, value] of Object.entries(env)) {
+      lines.push(`set ${cmdEscape(`${key}=${value}`)}`);
+    }
+    lines.push(`${cmdEscape(command)} %*`);
+    await writeFile(wrapperPath, `${lines.join('\r\n')}\r\n`, 'utf8');
+    return;
+  }
+
+  const envTokens = Object.entries(env).map(([key, value]) => shellEscape(`${key}=${value}`));
+  const envSegment = envTokens.length ? `${envTokens.join(' ')} ` : '';
+  const script = `#!/usr/bin/env sh\nexec env ${envSegment}${shellEscape(command)} "$@"\n`;
+  await writeFile(wrapperPath, script, 'utf8');
+  await chmod(wrapperPath, 0o700);
+}
+
+async function buildCodexMcpConfigArgs(mcpServers?: Record<string, McpServerConfig>): Promise<{
+  configArgs: string[];
+  failures: Array<{ id: string; reason: string }>;
+  cleanup: () => void;
+}> {
+  const configArgs: string[] = [];
+  const failures: Array<{ id: string; reason: string }> = [];
+  let wrappersDir: string | null = null;
+  const cleanup = (): void => {
+    if (!wrappersDir) return;
+    const dir = wrappersDir;
+    wrappersDir = null;
+    void rm(dir, { recursive: true }).catch(() => {});
+  };
+  if (!mcpServers) {
+    return { configArgs, failures, cleanup };
+  }
+  const mcpWithEnv = Object.values(mcpServers).some(
+    (config) => config.env && Object.keys(config.env).length
+  );
+  if (mcpWithEnv) {
+    wrappersDir = await mkdtemp(path.join(os.tmpdir(), 'agentconnect-codex-mcp-'));
+  }
+
+  for (const [id, config] of Object.entries(mcpServers)) {
+    if (!CODEX_MCP_ID_PATTERN.test(id)) {
+      failures.push({
+        id,
+        reason: 'Codex requires MCP server ids to match [A-Za-z0-9_-].',
+      });
+      continue;
+    }
+
+    let command = String(config.command);
+    const env = config.env && Object.keys(config.env).length ? config.env : undefined;
+    if (env && wrappersDir) {
+      const suffix = process.platform === 'win32' ? '.cmd' : '.sh';
+      const wrapperPath = path.join(wrappersDir, `mcp-${id}${suffix}`);
+      try {
+        await writeCodexMcpWrapper(wrapperPath, command, env);
+        command = wrapperPath;
+      } catch (err) {
+        failures.push({
+          id,
+          reason: `Failed to prepare MCP server environment: ${(err as Error)?.message || 'Unknown error'}`,
+        });
+        continue;
+      }
+    }
+
+    const prefix = `mcp_servers.${id}`;
+    configArgs.push('--config', `${prefix}.command=${JSON.stringify(command)}`);
+    if (Array.isArray(config.args) && config.args.length) {
+      configArgs.push('--config', `${prefix}.args=${JSON.stringify(config.args.map(String))}`);
+    }
+    if (typeof config.cwd === 'string' && config.cwd.trim()) {
+      configArgs.push('--config', `${prefix}.cwd=${JSON.stringify(config.cwd.trim())}`);
+    }
+  }
+  return { configArgs, failures, cleanup };
+}
 
 function buildCodexExecArgs(options: {
   prompt: string;
@@ -283,10 +378,19 @@ function buildCodexExecArgs(options: {
   model?: string;
   reasoningEffort?: string | null;
   providerDetailLevel?: ProviderDetailLevel;
+  mcpConfigArgs?: string[];
   mode: CodexExecMode;
 }): string[] {
-  const { prompt, cdTarget, resumeSessionId, model, reasoningEffort, providerDetailLevel, mode } =
-    options;
+  const {
+    prompt,
+    cdTarget,
+    resumeSessionId,
+    model,
+    reasoningEffort,
+    providerDetailLevel,
+    mcpConfigArgs,
+    mode,
+  } = options;
   const args: string[] = ['exec', '--skip-git-repo-check'];
   if (mode === 'legacy') {
     args.push('--json', '-C', cdTarget);
@@ -320,6 +424,9 @@ function buildCodexExecArgs(options: {
   }
   if (reasoningEffort) {
     args.push('--config', `model_reasoning_effort=${reasoningEffort}`);
+  }
+  if (mcpConfigArgs?.length) {
+    args.push(...mcpConfigArgs);
   }
   if (resumeSessionId) {
     args.push('resume', resumeSessionId);
@@ -638,8 +745,7 @@ function extractContextUsage(
     }
     return undefined;
   };
-  const toBoolean = (v: unknown): boolean | undefined =>
-    typeof v === 'boolean' ? v : undefined;
+  const toBoolean = (v: unknown): boolean | undefined => (typeof v === 'boolean' ? v : undefined);
   const contextWindow = toNumber(
     context?.context_window ?? context?.contextWindow ?? ev.context_window ?? ev.contextWindow
   );
@@ -659,13 +765,13 @@ function extractContextUsage(
       ev.contextRemainingTokens
   );
   const contextTruncated = toBoolean(
-    context?.context_truncated ?? context?.contextTruncated ?? ev.context_truncated ?? ev.contextTruncated
+    context?.context_truncated ??
+      context?.contextTruncated ??
+      ev.context_truncated ??
+      ev.contextTruncated
   );
   if (contextTokens === undefined) {
-    if (
-      usage?.input_tokens !== undefined &&
-      usage?.cached_input_tokens !== undefined
-    ) {
+    if (usage?.input_tokens !== undefined && usage?.cached_input_tokens !== undefined) {
       contextTokens = usage.input_tokens + usage.cached_input_tokens;
     } else if (usage?.input_tokens !== undefined) {
       contextTokens = usage.input_tokens;
@@ -943,7 +1049,7 @@ export async function listCodexModels(): Promise<ModelInfo[]> {
   return [];
 }
 
-export function runCodexPrompt({
+export async function runCodexPrompt({
   prompt,
   system,
   resumeSessionId,
@@ -951,17 +1057,37 @@ export function runCodexPrompt({
   reasoningEffort,
   repoRoot,
   cwd,
+  mcpServers,
   providerDetailLevel,
   onEvent,
   signal,
 }: RunPromptOptions): Promise<RunPromptResult> {
-  return new Promise((resolve) => {
-    const command = getCodexCommand();
-    const resolvedRepoRoot = repoRoot ? path.resolve(repoRoot) : null;
-    const resolvedCwd = cwd ? path.resolve(cwd) : null;
-    const runDir = resolvedCwd || resolvedRepoRoot || process.cwd();
-    const cdTarget = resolvedRepoRoot || resolvedCwd || '.';
+  const command = getCodexCommand();
+  const resolvedRepoRoot = repoRoot ? path.resolve(repoRoot) : null;
+  const resolvedCwd = cwd ? path.resolve(cwd) : null;
+  const runDir = resolvedCwd || resolvedRepoRoot || process.cwd();
+  const cdTarget = resolvedRepoRoot || resolvedCwd || '.';
+  const {
+    configArgs: codexMcpConfigArgs,
+    failures: codexMcpFailures,
+    cleanup: cleanupMcpConfig,
+  } = await buildCodexMcpConfigArgs(mcpServers);
 
+  for (const failure of codexMcpFailures) {
+    onEvent({
+      type: 'detail',
+      provider: 'codex',
+      providerDetail: {
+        eventType: 'mcp.server_failed',
+        data: {
+          id: failure.id,
+          reason: failure.reason,
+        },
+      },
+    });
+  }
+
+  return new Promise((resolve) => {
     const composedPrompt = applySystemPrompt(system, prompt);
     const runAttempt = (
       mode: CodexExecMode
@@ -974,7 +1100,27 @@ export function runCodexPrompt({
           model,
           reasoningEffort,
           providerDetailLevel,
+          mcpConfigArgs: codexMcpConfigArgs,
           mode,
+        });
+        const commandArgs = [...args];
+        if (commandArgs.length > 0) {
+          commandArgs[commandArgs.length - 1] = '[prompt]';
+        }
+
+        onEvent({
+          type: 'detail',
+          provider: 'codex',
+          providerDetail: {
+            eventType: 'command',
+            data: {
+              command,
+              args: commandArgs,
+              cwd: runDir,
+              mode,
+              ...(resumeSessionId ? { resumeSessionId } : {}),
+            },
+          },
         });
 
         logProviderSpawn({
@@ -1296,14 +1442,18 @@ export function runCodexPrompt({
       });
 
     void (async () => {
-      const primary = await runAttempt('modern');
-      if (primary.fallback) {
-        debugLog('Codex', 'fallback', { from: 'modern', to: 'legacy' });
-        const legacy = await runAttempt('legacy');
-        resolve({ sessionId: legacy.sessionId });
-        return;
+      try {
+        const primary = await runAttempt('modern');
+        if (primary.fallback) {
+          debugLog('Codex', 'fallback', { from: 'modern', to: 'legacy' });
+          const legacy = await runAttempt('legacy');
+          resolve({ sessionId: legacy.sessionId });
+          return;
+        }
+        resolve({ sessionId: primary.sessionId });
+      } finally {
+        cleanupMcpConfig();
       }
-      resolve({ sessionId: primary.sessionId });
     })();
   });
 }

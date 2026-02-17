@@ -9,6 +9,7 @@ import type {
   RpcId,
   RpcErrorCode,
   AppManifest,
+  McpServerConfig,
   ProviderId,
   SessionState,
   BackendState,
@@ -105,18 +106,27 @@ type ActiveRun = {
   token: string;
 };
 
+type McpServerFailure = {
+  id: string;
+  reason: string;
+};
+
 function send(socket: WebSocket, payload: object): void {
   socket.send(JSON.stringify(payload));
 }
 
-function buildProviderList(statuses: Record<string, ProviderStatus>): ProviderInfo[] {
+function buildProviderList(
+  statuses: Record<string, ProviderStatus>,
+  authRequiredProviders?: Set<ProviderId>
+): ProviderInfo[] {
   return Object.values(providers).map((provider) => {
     const info = statuses[provider.id] || {};
+    const authRequired = authRequiredProviders?.has(provider.id) ?? false;
     return {
       id: provider.id,
       name: provider.name,
       installed: info.installed ?? false,
-      loggedIn: info.loggedIn ?? false,
+      loggedIn: authRequired ? false : (info.loggedIn ?? false),
       version: info.version,
       updateAvailable: info.updateAvailable,
       latestVersion: info.latestVersion,
@@ -125,6 +135,7 @@ function buildProviderList(statuses: Record<string, ProviderStatus>): ProviderIn
       updateCommand: info.updateCommand,
       updateMessage: info.updateMessage,
       updateInProgress: info.updateInProgress,
+      supportsMcpServers: provider.supportsMcpServers === true,
     };
   });
 }
@@ -138,6 +149,29 @@ function resolveLoginExperience(mode: HostMode): 'embedded' | 'terminal' {
     if (normalized === 'embedded' || normalized === 'pty') return 'embedded';
   }
   return mode === 'dev' ? 'terminal' : 'embedded';
+}
+
+function parseBooleanEnv(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+function isProviderAuthFailureMessage(value: string): boolean {
+  const text = value.toLowerCase();
+  return (
+    text.includes('failed to authenticate') ||
+    text.includes('authentication_error') ||
+    text.includes('authentication failed') ||
+    text.includes('oauth token has expired') ||
+    text.includes('token has expired') ||
+    text.includes('api error: 401') ||
+    text.includes('status 401') ||
+    text.includes('unauthorized') ||
+    text.includes('invalid api key') ||
+    text.includes('please run /login') ||
+    text.includes('login required')
+  );
 }
 
 function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
@@ -160,6 +194,7 @@ function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
   const processTable = new Map<number, ChildProcess>();
   const backendState = new Map<string, BackendState>();
   const statusCache = new Map<string, { status: ProviderStatus; at: number }>();
+  const authRequiredProviders = new Set<ProviderId>();
   const statusCacheTtlMs = 8000;
   const statusInFlight = new Map<ProviderId, Promise<ProviderStatus>>();
   const hostAddress = options.host || '127.0.0.1';
@@ -169,12 +204,155 @@ function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
   const hostName =
     options.hostName || (mode === 'dev' ? 'AgentConnect Dev Host' : 'AgentConnect Host');
   const hostVersion = options.hostVersion || '0.1.0';
-  setSpawnLogging(Boolean(options.logSpawn));
+  const logSpawn = Boolean(options.logSpawn) || parseBooleanEnv(process.env.AGENTCONNECT_LOG_SPAWN);
+  setSpawnLogging(logSpawn);
 
   function resolveAppPathInternal(input: unknown): string {
     if (!input) return basePath;
     const value = String(input);
     return path.isAbsolute(value) ? value : path.resolve(basePath, value);
+  }
+
+  function getActiveMcpServers(
+    mcpServers: Record<string, McpServerConfig> | null | undefined
+  ): Record<string, McpServerConfig> | undefined {
+    if (!mcpServers) return undefined;
+    const entries = Object.entries(mcpServers).filter(([, config]) => config.enabled !== false);
+    if (!entries.length) return undefined;
+    return Object.fromEntries(entries);
+  }
+
+  function normalizeMcpServersInput(
+    input: unknown,
+    options?: { allowNull?: boolean; tolerant?: boolean }
+  ): {
+    value: Record<string, McpServerConfig> | null | undefined;
+    failures: McpServerFailure[];
+    error?: string;
+  } {
+    const allowNull = options?.allowNull ?? false;
+    const tolerant = options?.tolerant ?? false;
+    if (input === undefined) {
+      return { value: undefined, failures: [] };
+    }
+    if (input === null) {
+      if (allowNull) {
+        return { value: null, failures: [] };
+      }
+      return { value: undefined, failures: [], error: 'mcpServers cannot be null' };
+    }
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      return { value: undefined, failures: [], error: 'mcpServers must be an object or null' };
+    }
+    const result: Record<string, McpServerConfig> = {};
+    const failures: McpServerFailure[] = [];
+    const fail = (id: string, reason: string): string | undefined => {
+      if (!tolerant) return `Invalid mcpServers.${id}: ${reason}`;
+      failures.push({ id, reason });
+      return undefined;
+    };
+
+    for (const [rawId, rawConfig] of Object.entries(input)) {
+      const id = String(rawId);
+      if (!id.trim()) {
+        const error = fail('(empty)', 'server id must be non-empty');
+        if (error) return { value: undefined, failures: [], error };
+        continue;
+      }
+      if (!rawConfig || typeof rawConfig !== 'object' || Array.isArray(rawConfig)) {
+        const error = fail(id, 'server config must be an object');
+        if (error) return { value: undefined, failures: [], error };
+        continue;
+      }
+      const record = rawConfig as Record<string, unknown>;
+
+      if (typeof record.command !== 'string' || !record.command.trim()) {
+        const error = fail(id, 'command is required');
+        if (error) return { value: undefined, failures: [], error };
+        continue;
+      }
+      const commandValue = record.command.trim();
+      if (
+        commandValue.includes('\n') ||
+        commandValue.includes('\r') ||
+        commandValue.includes('\u0000')
+      ) {
+        const error = fail(id, 'command contains invalid control characters');
+        if (error) return { value: undefined, failures: [], error };
+        continue;
+      }
+
+      const command = commandValue;
+
+      let args: string[] | undefined;
+      if ('args' in record) {
+        if (!Array.isArray(record.args) || record.args.some((entry) => typeof entry !== 'string')) {
+          const error = fail(id, 'args must be an array of strings');
+          if (error) return { value: undefined, failures: [], error };
+          continue;
+        }
+        args = record.args.map((entry) => String(entry));
+      }
+
+      let env: Record<string, string> | undefined;
+      if ('env' in record) {
+        if (!record.env || typeof record.env !== 'object' || Array.isArray(record.env)) {
+          const error = fail(id, 'env must be an object of string values');
+          if (error) return { value: undefined, failures: [], error };
+          continue;
+        }
+        const rawEnv = record.env as Record<string, unknown>;
+        const nextEnv: Record<string, string> = {};
+        let valid = true;
+        for (const [envKey, envValue] of Object.entries(rawEnv)) {
+          if (!envKey.trim() || envKey.includes('=')) {
+            const error = fail(id, `env key "${envKey}" is invalid`);
+            if (error) return { value: undefined, failures: [], error };
+            valid = false;
+            break;
+          }
+          if (typeof envValue !== 'string') {
+            const error = fail(id, `env.${envKey} must be a string`);
+            if (error) return { value: undefined, failures: [], error };
+            valid = false;
+            break;
+          }
+          nextEnv[envKey] = envValue;
+        }
+        if (!valid) continue;
+        env = nextEnv;
+      }
+
+      let cwd: string | undefined;
+      if ('cwd' in record && record.cwd !== undefined) {
+        if (typeof record.cwd !== 'string' || !record.cwd.trim()) {
+          const error = fail(id, 'cwd must be a non-empty string');
+          if (error) return { value: undefined, failures: [], error };
+          continue;
+        }
+        cwd = resolveAppPathInternal(record.cwd);
+      }
+
+      let enabled: boolean | undefined;
+      if ('enabled' in record && record.enabled !== undefined) {
+        if (typeof record.enabled !== 'boolean') {
+          const error = fail(id, 'enabled must be a boolean');
+          if (error) return { value: undefined, failures: [], error };
+          continue;
+        }
+        enabled = record.enabled;
+      }
+
+      result[id] = {
+        command,
+        ...(args ? { args } : {}),
+        ...(env ? { env } : {}),
+        ...(cwd ? { cwd } : {}),
+        ...(enabled !== undefined ? { enabled } : {}),
+      };
+    }
+
+    return { value: result, failures };
   }
 
   function mapFileType(stat: fs.Stats): 'file' | 'dir' | 'link' | 'other' {
@@ -561,7 +739,7 @@ function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
         hostVersion,
         protocolVersion: '0.1',
         mode: 'local',
-        capabilities: [],
+        capabilities: ['sessions.mcpServers'],
         providers: Object.keys(providers),
         loginExperience,
       });
@@ -579,7 +757,7 @@ function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
         })
       );
       const statuses = Object.fromEntries(statusEntries);
-      const list = buildProviderList(statuses).map((entry) => ({
+      const list = buildProviderList(statuses, authRequiredProviders).map((entry) => ({
         ...entry,
         updateInProgress: updatingProviders.has(entry.id),
       }));
@@ -599,12 +777,13 @@ function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
       const allowFast = statusOptions.fast !== false;
       const force = Boolean(statusOptions.force);
       const status = await getCachedStatus(provider, { allowFast, force });
+      const authRequired = authRequiredProviders.has(provider.id);
       responder.reply(id, {
         provider: {
           id: provider.id,
           name: provider.name,
           installed: status.installed,
-          loggedIn: status.loggedIn,
+          loggedIn: authRequired ? false : status.loggedIn,
           version: status.version,
           updateAvailable: status.updateAvailable,
           latestVersion: status.latestVersion,
@@ -646,7 +825,7 @@ function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
             id: provider.id,
             name: provider.name,
             installed: status.installed,
-            loggedIn: status.loggedIn,
+            loggedIn: authRequiredProviders.has(provider.id) ? false : status.loggedIn,
             version: status.version,
             updateAvailable: status.updateAvailable,
             latestVersion: status.latestVersion,
@@ -694,6 +873,9 @@ function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
           ...(defaults || {}),
           ...(incoming || {}),
         });
+        if (result.loggedIn) {
+          authRequiredProviders.delete(provider.id);
+        }
         invalidateStatus(provider.id);
         responder.reply(id, result);
       } catch (err) {
@@ -710,6 +892,7 @@ function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
         return;
       }
       await provider.logout();
+      authRequiredProviders.delete(provider.id);
       invalidateStatus(provider.id);
       responder.reply(id, {});
       return;
@@ -773,6 +956,11 @@ function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
       const systemPrompt = resolveSystemPrompt(providerId, params.system);
       const cwd = params.cwd ? resolveAppPathInternal(params.cwd) : undefined;
       const repoRoot = params.repoRoot ? resolveAppPathInternal(params.repoRoot) : undefined;
+      const normalizedCreateMcp = normalizeMcpServersInput(params.mcpServers, { allowNull: true });
+      if (normalizedCreateMcp.error) {
+        responder.error(id, 'AC_ERR_INVALID_ARGS', normalizedCreateMcp.error);
+        return;
+      }
       const providerDetailLevel = (params.providerDetailLevel as string) || undefined;
       if (model) {
         recordModelCapability(model);
@@ -791,6 +979,7 @@ function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
         model,
         providerSessionId: null,
         reasoningEffort,
+        ...(normalizedCreateMcp.value ? { mcpServers: normalizedCreateMcp.value } : {}),
         cwd,
         repoRoot,
         systemPrompt,
@@ -798,7 +987,7 @@ function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
           providerDetailLevel === 'raw' || providerDetailLevel === 'minimal'
             ? providerDetailLevel
             : undefined,
-        summaryMode: summaryMode === 'force' ? 'auto' : summaryMode ?? 'auto',
+        summaryMode: summaryMode === 'force' ? 'auto' : (summaryMode ?? 'auto'),
         summaryPrompt,
         summaryAutoUsed: false,
       });
@@ -824,6 +1013,20 @@ function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
       }
       if ('system' in params) {
         existing.systemPrompt = resolveSystemPrompt(existing.providerId, params.system);
+      }
+      if ('mcpServers' in params) {
+        const normalizedResumeMcp = normalizeMcpServersInput(params.mcpServers, {
+          allowNull: true,
+        });
+        if (normalizedResumeMcp.error) {
+          responder.error(id, 'AC_ERR_INVALID_ARGS', normalizedResumeMcp.error);
+          return;
+        }
+        if (normalizedResumeMcp.value) {
+          existing.mcpServers = normalizedResumeMcp.value;
+        } else {
+          delete existing.mcpServers;
+        }
       }
       if (params.providerDetailLevel) {
         const level = String(params.providerDetailLevel);
@@ -887,6 +1090,24 @@ function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
         responder.error(id, 'AC_ERR_UNSUPPORTED', 'Unknown provider');
         return;
       }
+      const hasSendMcpOverride = Object.prototype.hasOwnProperty.call(params, 'mcpServers');
+      const normalizedSendMcp = hasSendMcpOverride
+        ? normalizeMcpServersInput(params.mcpServers, { allowNull: true, tolerant: true })
+        : { value: undefined, failures: [] as McpServerFailure[] };
+      if (normalizedSendMcp.error) {
+        responder.error(id, 'AC_ERR_INVALID_ARGS', normalizedSendMcp.error);
+        return;
+      }
+      const effectiveMcpSource = hasSendMcpOverride ? normalizedSendMcp.value : session.mcpServers;
+      const activeMcpServers = getActiveMcpServers(effectiveMcpSource);
+      if (activeMcpServers && !provider.supportsMcpServers) {
+        responder.error(
+          id,
+          'AC_ERR_UNSUPPORTED',
+          `${provider.name} does not support dynamic MCP server configuration.`
+        );
+        return;
+      }
       if (updatingProviders.has(session.providerId)) {
         responder.error(id, 'AC_ERR_BUSY', 'Provider update in progress.');
         return;
@@ -929,6 +1150,18 @@ function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
       const runToken = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       activeRuns.set(sessionId, { controller, emit: responder.emit, token: runToken });
       let sawError = false;
+      let sawAuthFailure = false;
+      if (normalizedSendMcp.failures.length) {
+        emitSessionEvent(responder.emit, sessionId, 'detail', {
+          provider: session.providerId,
+          providerDetail: {
+            eventType: 'mcp.server_failed',
+            data: {
+              failures: normalizedSendMcp.failures,
+            },
+          },
+        });
+      }
 
       provider
         .runPrompt({
@@ -938,6 +1171,7 @@ function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
           reasoningEffort: session.reasoningEffort,
           repoRoot,
           cwd,
+          mcpServers: activeMcpServers,
           providerDetailLevel,
           system: session.systemPrompt,
           signal: controller.signal,
@@ -946,6 +1180,28 @@ function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
             if (!current || current.token !== runToken) return;
             if (event.type === 'error') {
               sawError = true;
+              if (
+                !sawAuthFailure &&
+                typeof event.message === 'string' &&
+                isProviderAuthFailureMessage(event.message)
+              ) {
+                sawAuthFailure = true;
+                authRequiredProviders.add(session.providerId);
+                invalidateStatus(session.providerId);
+                emitSessionEvent(current.emit, sessionId, 'detail', {
+                  provider: session.providerId,
+                  providerDetail: {
+                    eventType: 'provider.auth_required',
+                    data: {
+                      message: event.message,
+                    },
+                  },
+                });
+              }
+            }
+            if (event.type === 'final' && !sawError) {
+              authRequiredProviders.delete(session.providerId);
+              invalidateStatus(session.providerId);
             }
             if (sawError && event.type === 'final') {
               return;
@@ -980,9 +1236,24 @@ function createHostRuntime(options: HostRuntimeOptions): HostRuntime {
         .catch((err: Error) => {
           const current = activeRuns.get(sessionId);
           if (!current || current.token !== runToken) return;
+          const errorMessage = err?.message || 'Provider error';
+          if (!sawAuthFailure && isProviderAuthFailureMessage(errorMessage)) {
+            sawAuthFailure = true;
+            authRequiredProviders.add(session.providerId);
+            invalidateStatus(session.providerId);
+            emitSessionEvent(current.emit, sessionId, 'detail', {
+              provider: session.providerId,
+              providerDetail: {
+                eventType: 'provider.auth_required',
+                data: {
+                  message: errorMessage,
+                },
+              },
+            });
+          }
           if (!sawError) {
             emitSessionEvent(current.emit, sessionId, 'error', {
-              message: err?.message || 'Provider error',
+              message: errorMessage,
             });
           }
         })
