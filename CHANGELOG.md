@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.9
+
+- Fix Claude MCP run wiring by passing per-session MCP loadouts via `--mcp-config` during prompt execution.
+
 ## 0.2.8
 
 - Add session-level MCP server loadouts to ACP and SDK (`create`, `resume`, `send`) with explicit provider capability reporting.

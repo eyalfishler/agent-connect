@@ -395,7 +395,7 @@ async function createClaudeLoginSettingsFile(
   return filePath;
 }
 
-async function createClaudeRunSettingsFile(
+async function createClaudeRunMcpConfigFile(
   mcpServers?: Record<string, McpServerConfig>
 ): Promise<string | null> {
   if (!mcpServers || !Object.keys(mcpServers).length) return null;
@@ -1357,10 +1357,10 @@ export async function runClaudePrompt({
   onEvent,
   signal,
 }: RunPromptOptions): Promise<RunPromptResult> {
-  let settingsPath: string | null = null;
+  let mcpConfigPath: string | null = null;
   if (mcpServers && Object.keys(mcpServers).length) {
     try {
-      settingsPath = await createClaudeRunSettingsFile(mcpServers);
+      mcpConfigPath = await createClaudeRunMcpConfigFile(mcpServers);
     } catch (err) {
       onEvent({
         type: 'detail',
@@ -1368,7 +1368,7 @@ export async function runClaudePrompt({
         providerDetail: {
           eventType: 'mcp.server_failed',
           data: {
-            reason: 'Failed to create Claude MCP settings file',
+            reason: 'Failed to create Claude MCP config file',
             error: (err as Error)?.message || 'Unknown error',
           },
         },
@@ -1392,8 +1392,8 @@ export async function runClaudePrompt({
     if (modelValue) {
       args.push('--model', modelValue);
     }
-    if (settingsPath) {
-      args.push('--settings', settingsPath);
+    if (mcpConfigPath) {
+      args.push('--mcp-config', mcpConfigPath);
     }
     if (resumeSessionId) args.push('--resume', resumeSessionId);
     appendPromptArg(args, prompt);
@@ -1430,11 +1430,11 @@ export async function runClaudePrompt({
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    let settingsCleaned = false;
+    let mcpConfigCleaned = false;
     const cleanupSettings = (): void => {
-      if (settingsCleaned || !settingsPath) return;
-      settingsCleaned = true;
-      rm(settingsPath).catch(() => {});
+      if (mcpConfigCleaned || !mcpConfigPath) return;
+      mcpConfigCleaned = true;
+      rm(mcpConfigPath).catch(() => {});
     };
 
     if (signal) {
