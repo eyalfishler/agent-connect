@@ -128,6 +128,7 @@ export interface ProviderStatus {
 export interface ProviderInfo extends ProviderStatus {
   id: ProviderId;
   name: string;
+  supportsMcpServers?: boolean;
 }
 
 export type ProviderDetailLevel = 'minimal' | 'raw';
@@ -178,6 +179,14 @@ export interface ProviderLoginOptions {
   loginExperience?: 'embedded' | 'terminal';
 }
 
+export interface McpServerConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  enabled?: boolean;
+}
+
 export interface SessionEvent {
   type:
     | 'delta'
@@ -225,6 +234,7 @@ export interface RunPromptOptions {
   reasoningEffort?: string | null;
   repoRoot?: string;
   cwd?: string;
+  mcpServers?: Record<string, McpServerConfig>;
   providerDetailLevel?: ProviderDetailLevel;
   signal?: AbortSignal;
   onEvent: (event: SessionEvent) => void;
@@ -245,6 +255,7 @@ export interface InstallResult {
 export interface Provider {
   id: ProviderId;
   name: string;
+  supportsMcpServers?: boolean;
   ensureInstalled(): Promise<InstallResult>;
   fastStatus?(): Promise<ProviderStatus>;
   status(): Promise<ProviderStatus>;
@@ -262,6 +273,7 @@ export interface SessionState {
   model: string | null;
   providerSessionId: string | null;
   reasoningEffort: string | null;
+  mcpServers?: Record<string, McpServerConfig>;
   cwd?: string;
   repoRoot?: string;
   providerDetailLevel?: ProviderDetailLevel;

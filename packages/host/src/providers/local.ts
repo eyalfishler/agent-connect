@@ -129,6 +129,18 @@ export async function runLocalPrompt({
     args: ['--base-url', base, '--model', resolvedModel, prompt],
     cwd: process.cwd(),
   });
+  onEvent({
+    type: 'detail',
+    provider: 'local',
+    providerDetail: {
+      eventType: 'command',
+      data: {
+        command: 'local',
+        args: ['--base-url', base, '--model', resolvedModel, '[prompt]'],
+        cwd: process.cwd(),
+      },
+    },
+  });
 
   const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
   const systemPrompt = typeof system === 'string' ? system.trim() : '';

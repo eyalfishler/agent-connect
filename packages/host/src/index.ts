@@ -16,6 +16,7 @@ export type {
   InstallResult,
   LineParser,
   ModelInfo,
+  McpServerConfig,
   ObservedCapabilities,
   ObservedTracker,
   PackageManagerType,

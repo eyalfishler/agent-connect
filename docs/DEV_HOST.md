@@ -18,6 +18,24 @@ bun add -g @agentconnect/cli
 agentconnect dev --app . --ui http://localhost:5173
 ```
 
+The `--ui` URL must match your app dev server URL. For `apps/test-app`, use:
+
+```bash
+agentconnect dev --app apps/test-app --ui http://localhost:5174
+```
+
+Enable provider command spawn logging:
+
+```bash
+agentconnect dev --app . --ui http://localhost:5173 --log-spawn
+```
+
+Enable debug logs:
+
+```bash
+agentconnect dev --app . --ui http://localhost:5173 --debug
+```
+
 `@agentconnect/cli` is a thin wrapper around `startDevHost` from `@agentconnect/host`.
 
 ## Embedded host (server/runtime)
@@ -135,6 +153,11 @@ Codex environment variables (optional):
 - `AGENTCONNECT_CODEX_MODEL_VERBOSITY` (`high` for GPT‑5 models)
 - `AGENTCONNECT_CODEX_RUST_LOG` (override `RUST_LOG` for Codex internals)
 - `AGENTCONNECT_CODEX_DEBUG_LOGS` (`true` to set `RUST_LOG=codex_exec=debug,codex_core=debug`)
+
+Host logging environment variables:
+
+- `AGENTCONNECT_LOG_SPAWN` (`true`/`1` to print provider spawn commands)
+- `AGENTCONNECT_DEBUG` (`true`/`1` to enable debug logs)
 
 Summary model overrides (optional):
 

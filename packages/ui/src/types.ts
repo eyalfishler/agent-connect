@@ -82,6 +82,9 @@ export interface ConnectComponentElements {
   connectPanel: HTMLDivElement | null;
   localPanel: HTMLDivElement | null;
   popoverPanel: HTMLDivElement | null;
+  connectedAuthWrap: HTMLDivElement | null;
+  connectedAuthText: HTMLDivElement | null;
+  connectedAuthActionButton: HTMLButtonElement | null;
   providerList: HTMLDivElement | null;
   connectedModelSelect: HTMLSelectElement | null;
   connectedEffortSelect: HTMLSelectElement | null;

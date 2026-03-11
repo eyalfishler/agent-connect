@@ -125,6 +125,16 @@ bun --cwd apps/agentic-notes dev
 agentconnect dev --app apps/agentic-notes --ui http://localhost:5173
 ```
 
+Run the test app (minimal AgentConnect surface for protocol and MCP testing):
+
+```bash
+bun --cwd apps/test-app dev
+```
+
+```bash
+agentconnect dev --app apps/test-app --ui http://localhost:5174
+```
+
 Run the Next.js example with a Node backend (auto-starts the AgentConnect host):
 
 ```bash
@@ -140,6 +150,7 @@ bun --cwd apps/subscription-audit dev
 ## Examples
 
 - `apps/agentic-notes`: client-only notes assistant (requires running the AgentConnect host).
+- `apps/test-app`: minimal AgentConnect test surface without additional app features.
 - `apps/sheets-ai`: spreadsheet + agent example with a Node backend (starts the host automatically).
 - `apps/subscription-audit`: subscription audit app with file upload + analysis backend.
 

@@ -27,6 +27,8 @@ Dev options:
   --port <port>   Port to bind (default: 9630)
   --app <path>    App path (optional)
   --ui <url>      UI dev server URL (optional)
+  --log-spawn     Log provider command spawns
+  --debug         Enable debug host logs
 
 Pack options:
   --app <path>    App directory (default: cwd)
@@ -64,6 +66,10 @@ function parsePort(value: string | null, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function hasFlag(name: string, alias?: string): boolean {
+  return args.includes(name) || (alias ? args.includes(alias) : false);
+}
+
 async function main(): Promise<number | null> {
   if (!command || command === '--help' || command === '-h') {
     console.log(helpText);
@@ -75,7 +81,12 @@ async function main(): Promise<number | null> {
     const port = parsePort(getFlag('--port', '-p'), 9630);
     const appPath = getFlag('--app', '-a') ?? undefined;
     const uiUrl = getFlag('--ui', '-u') ?? undefined;
-    startDevHost({ host, port, appPath, uiUrl });
+    const logSpawn = hasFlag('--log-spawn');
+    const debug = hasFlag('--debug');
+    if (debug && !process.env.AGENTCONNECT_DEBUG) {
+      process.env.AGENTCONNECT_DEBUG = '1';
+    }
+    startDevHost({ host, port, appPath, uiUrl, logSpawn });
     return null;
   }
 

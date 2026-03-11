@@ -128,6 +128,10 @@ export const CONNECT_TEMPLATE = `
       <div>
         <div class="ac-popover-title">Provider</div>
       </div>
+      <div class="ac-popover-auth" hidden>
+        <div class="ac-popover-auth-text"></div>
+        <button class="ac-button secondary ac-popover-auth-action" type="button">Login</button>
+      </div>
       <div class="ac-field ac-model-field">
         <label>Model</label>
         <select class="ac-select ac-connected-model"></select>

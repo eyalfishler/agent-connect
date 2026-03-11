@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import type { IPty } from 'node-pty';
 import type {
+  McpServerConfig,
   ProviderStatus,
   RunPromptOptions,
   RunPromptResult,
@@ -394,6 +395,16 @@ async function createClaudeLoginSettingsFile(
   return filePath;
 }
 
+async function createClaudeRunMcpConfigFile(
+  mcpServers?: Record<string, McpServerConfig>
+): Promise<string | null> {
+  if (!mcpServers || !Object.keys(mcpServers).length) return null;
+  const fileName = `agentconnect-claude-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
+  const filePath = path.join(os.tmpdir(), fileName);
+  await writeFile(filePath, JSON.stringify({ mcpServers }), 'utf8');
+  return filePath;
+}
+
 async function ensureClaudeOnboardingSettings(): Promise<void> {
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
   const settingsPath = path.join(configDir, 'settings.json');
@@ -665,6 +676,10 @@ async function checkClaudeCliStatus(): Promise<ClaudeCliLoginStatus> {
           }
         }
       }
+    }
+
+    if (!authError && isClaudeAuthErrorText(output)) {
+      authError = output;
     }
 
     if (authError) {
@@ -1015,6 +1030,8 @@ function mapClaudeModel(model: string | undefined): string | null {
 
 interface ClaudeMessage {
   type?: string;
+  is_error?: boolean;
+  error?: unknown;
   session_id?: string;
   sessionId?: string;
   modelUsage?: Record<string, unknown>;
@@ -1167,8 +1184,7 @@ function extractClaudeContextUsage(
     }
     return undefined;
   };
-  const toBoolean = (v: unknown): boolean | undefined =>
-    typeof v === 'boolean' ? v : undefined;
+  const toBoolean = (v: unknown): boolean | undefined => (typeof v === 'boolean' ? v : undefined);
   const contextWindow = toNumber(
     (context as Record<string, unknown> | undefined)?.context_window ??
       (context as Record<string, unknown> | undefined)?.contextWindow ??
@@ -1210,10 +1226,7 @@ function extractClaudeContextUsage(
     if (cached !== undefined) contextCachedTokens = cached;
   }
   if (contextTokens === undefined) {
-    if (
-      usage?.input_tokens !== undefined &&
-      usage?.cached_input_tokens !== undefined
-    ) {
+    if (usage?.input_tokens !== undefined && usage?.cached_input_tokens !== undefined) {
       contextTokens = usage.input_tokens + usage.cached_input_tokens;
     } else if (usage?.input_tokens !== undefined) {
       contextTokens = usage.input_tokens;
@@ -1321,16 +1334,47 @@ function extractResultText(msg: ClaudeMessage): string | null {
   return typeof text === 'string' && text ? text : null;
 }
 
-export function runClaudePrompt({
+function extractResultErrorText(msg: ClaudeMessage): string | null {
+  if (String(msg.type ?? '') !== 'result') return null;
+  if (!msg.is_error) return null;
+  if (typeof msg.result === 'string' && msg.result.trim()) return msg.result;
+  if (typeof msg.error === 'string' && msg.error.trim()) return msg.error;
+  if (msg.error && typeof msg.error === 'object') {
+    const errorMessage = (msg.error as { message?: unknown }).message;
+    if (typeof errorMessage === 'string' && errorMessage.trim()) return errorMessage;
+  }
+  return 'Claude run failed';
+}
+
+export async function runClaudePrompt({
   prompt,
   system,
   resumeSessionId,
   model,
   cwd,
+  mcpServers,
   providerDetailLevel,
   onEvent,
   signal,
 }: RunPromptOptions): Promise<RunPromptResult> {
+  let mcpConfigPath: string | null = null;
+  if (mcpServers && Object.keys(mcpServers).length) {
+    try {
+      mcpConfigPath = await createClaudeRunMcpConfigFile(mcpServers);
+    } catch (err) {
+      onEvent({
+        type: 'detail',
+        provider: 'claude',
+        providerDetail: {
+          eventType: 'mcp.server_failed',
+          data: {
+            reason: 'Failed to create Claude MCP config file',
+            error: (err as Error)?.message || 'Unknown error',
+          },
+        },
+      });
+    }
+  }
   return new Promise((resolve) => {
     const command = getClaudeCommand();
     const args = [
@@ -1348,8 +1392,29 @@ export function runClaudePrompt({
     if (modelValue) {
       args.push('--model', modelValue);
     }
+    if (mcpConfigPath) {
+      args.push('--mcp-config', mcpConfigPath);
+    }
     if (resumeSessionId) args.push('--resume', resumeSessionId);
     appendPromptArg(args, prompt);
+    const commandArgs = [...args];
+    if (commandArgs.length > 0) {
+      commandArgs[commandArgs.length - 1] = '[prompt]';
+    }
+
+    onEvent({
+      type: 'detail',
+      provider: 'claude',
+      providerDetail: {
+        eventType: 'command',
+        data: {
+          command,
+          args: commandArgs,
+          cwd: cwd || process.cwd(),
+          ...(resumeSessionId ? { resumeSessionId } : {}),
+        },
+      },
+    });
 
     logProviderSpawn({
       provider: 'claude',
@@ -1364,6 +1429,13 @@ export function runClaudePrompt({
       env: { ...process.env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+
+    let mcpConfigCleaned = false;
+    const cleanupSettings = (): void => {
+      if (mcpConfigCleaned || !mcpConfigPath) return;
+      mcpConfigCleaned = true;
+      rm(mcpConfigPath).catch(() => {});
+    };
 
     if (signal) {
       signal.addEventListener('abort', () => {
@@ -1402,11 +1474,11 @@ export function runClaudePrompt({
       }
     };
 
-    const emitError = (message: string): void => {
+    const emitError = (message: string, providerDetail?: ProviderDetail): void => {
       if (sawError) return;
       sawError = true;
       emitUsageIfAvailable();
-      emit({ type: 'error', message });
+      emit({ type: 'error', message, providerDetail });
     };
 
     const emitFinal = (text: string, providerDetail?: ProviderDetail): void => {
@@ -1612,11 +1684,18 @@ export function runClaudePrompt({
         return;
       }
 
-      const result = extractResultText(msg);
-      if (result && !didFinalize && !sawError) {
+      const resultError = extractResultErrorText(msg);
+      if (resultError && !didFinalize && !sawError) {
         didFinalize = true;
-        emitFinal(aggregated || result, detail);
+        emitError(resultError, detail);
         handled = true;
+      } else {
+        const result = extractResultText(msg);
+        if (result && !didFinalize && !sawError) {
+          didFinalize = true;
+          emitFinal(aggregated || result, detail);
+          handled = true;
+        }
       }
 
       if (!handled) {
@@ -1645,11 +1724,13 @@ export function runClaudePrompt({
       if (!usageEmitted) {
         emitUsageIfAvailable();
       }
+      cleanupSettings();
       resolve({ sessionId: finalSessionId });
     });
 
     child.on('error', (err: Error) => {
       emitError(err?.message ?? 'Claude failed to start');
+      cleanupSettings();
       resolve({ sessionId: finalSessionId });
     });
   });
